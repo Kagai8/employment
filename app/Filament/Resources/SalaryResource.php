@@ -10,6 +10,8 @@ use App\Models\Employee;
 use App\Models\Installment;
 use App\Models\Loan;
 use App\Models\Salary;
+use App\Models\EmployeeSavingsPlan; // ✅ NEW SAVINGS LOGIC: Import Master Plan Model
+use App\Models\Saving; // ✅ NEW SAVINGS LOGIC: Import Ledger Model
 use Filament\Forms;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
@@ -107,6 +109,21 @@ class SalaryResource extends Resource
                                 $totalAdvances = $advances->sum('remaining_balance'); // Sum remaining advances
                                 $set('advance_balance', $totalAdvances); // Show balance
                                 $set('advance_deduction', min($totalAdvances, $set('net_salary', 0)));
+
+                                // ✅ NEW SAVINGS LOGIC: Fetch current savings plan (Active or Paused)
+                                $savingsPlan = EmployeeSavingsPlan::where('employee_id', $employee->id ?? null)
+                                    ->where('status', '!=', 'withdrawn') // ⬅️ CRUCIAL CHANGE: Ignore withdrawn plans
+                                    ->first();
+
+                                if ($savingsPlan) {
+                                    $set('employee_savings_plan_id', $savingsPlan->id);
+                                    $set('total_savings_balance', $savingsPlan->total_amount); // Set the current running total
+                                } else {
+                                    // If no active/paused plan is found, assume no current savings plan exists
+                                    $set('employee_savings_plan_id', null);
+                                    $set('total_savings_balance', 0);
+                                }
+
                             }
                         }),
 
@@ -295,6 +312,30 @@ class SalaryResource extends Resource
                                 ->disabled(), // Show advance balance but prevent changes
                         ])->columns(2),
 
+                    // ✅ NEW SAVINGS LOGIC: Deduction Input and Balance Display
+                    Section::make('Savings')
+                        ->schema([
+                            TextInput::make('saving_deduction') // Manual input for deduction
+                                ->label('Savings Deduction Amount')
+                                ->numeric()
+                                ->default(0)
+                                ->dehydrated() // Ensure it's saved in the Salary record
+                                ->live()
+                                ->helperText('Amount to be deducted for savings this pay cycle.'),
+
+                            Hidden::make('employee_savings_plan_id') // To track the master plan ID
+                                ->dehydrated(),
+
+                            TextInput::make('total_savings_balance') // Read-only view of current total
+                                ->label('Total Saved Balance')
+                                ->numeric()
+                                ->default(0)
+                                ->disabled()
+                                ->helperText('Employee\'s current total saved amount.'),
+
+                        ])->columns(2),
+                    // ✅ END NEW SAVINGS LOGIC
+
                     ]),
 
 
@@ -310,9 +351,10 @@ class SalaryResource extends Resource
                                         ((float) ($get('paye_tax') ?? 0) +
                                         (float) ($get('sha_contribution') ?? 0) +
                                         (float) ($get('nssf_contribution') ?? 0) +
-                                        (float) collect($get('extra_deductions') ?? [])->sum(fn ($item) => (float) $item['amount'])+
-                                        (float) ($get('loan_deduction') ?? 0));
-                                        ;
+                                        (float) collect($get('extra_deductions') ?? [])->sum(fn ($item) => (float) $item['amount']) +
+                                        (float) ($get('loan_deduction') ?? 0) +
+                                        (float) ($get('saving_deduction') ?? 0) // ✅ NEW SAVINGS LOGIC: Include Savings Deduction
+                                        );
 
                                 // Deduct advance deduction
                                 $advanceDeduction = (float) ($get('advance_deduction') ?? 0);
@@ -438,4 +480,6 @@ class SalaryResource extends Resource
             'edit' => Pages\EditSalary::route('/{record}/edit'),
         ];
     }
+
+
 }

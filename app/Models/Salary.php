@@ -29,23 +29,22 @@ class Salary extends Model
         'balance',
         'loan_id',
         'advance_deduction',
+        'saving_deduction',
+        'employee_savings_plan_id',
     ];
 
     protected $casts = [
         'extra_earnings' => 'array',
         'extra_deductions' => 'array',
-        
     ];
-
-
 
     public function employee()
     {
         return $this->belongsTo(Employee::class);
     }
 
-
-    public function salaries(){
+    public function salaries()
+    {
         return $this->hasMany(Salary::class);
     }
 
@@ -57,138 +56,149 @@ class Salary extends Model
     public function advances()
     {
         return $this->hasMany(Advance::class, 'employee_id', 'employee_id')
-            ->where('remaining_balance', '>', 0); // Fetch only advances with a balance
+            ->where('remaining_balance', '>', 0);
     }
 
     protected function mutateFormDataBeforeSave(array $data): array
-{
-    if ($data['deduct_loan'] === 'no') {
-        $data['loan_deduction'] = 0;
-    }
-
-    return $data;
-}
-
-
-protected static function booted()
-{
-    static::created(function ($salary) {
-        Log::info("Processing Loan Deduction", [
-            'salary_id' => $salary->id,
-            'employee_id' => $salary->employee_id,
-            'deduct_loan' => $salary->deduct_loan,
-            'loan_id' => $salary->loan_id,
-            'loan_deduction' => $salary->loan_deduction
-        ]);
-
-        // ✅ Loan Deduction Logic (Your existing logic)
-        if ($salary->deduct_loan === 'yes' && $salary->loan_id) {
-            $installment = Installment::where('loan_id', $salary->loan_id)
-                ->where('status', 'unpaid')
-                ->orderBy('due_date', 'asc')
-                ->first();
-
-            if ($installment) {
-                Log::info("Installment Found", [
-                    'installment_id' => $installment->id,
-                    'amount' => $installment->amount
-                ]);
-
-                // ✅ Deduct from Loan Balance
-                $loan = Loan::find($salary->loan_id);
-                if ($loan) {
-                    Log::info("Before Deduction", [
-                        'loan_id' => $loan->id,
-                        'current_balance' => $loan->balance
-                    ]);
-
-                    $loan->balance -= $salary->loan_deduction;
-                    $loan->save();
-
-                    Log::info("After Deduction", [
-                        'loan_id' => $loan->id,
-                        'new_balance' => $loan->balance
-                    ]);
-
-                    // ✅ Mark Installment as Paid
-                    $installment->update([
-                        'salary_id' => $salary->id,
-                        'date_paid' => now(),
-                        'status' => 'paid',
-                    ]);
-
-                    Log::info("Installment Updated to Paid", ['installment_id' => $installment->id]);
-
-                    // ✅ If Loan is Fully Paid, Mark Remaining Installments as Paid
-                    if ($loan->balance <= 0) {
-                        Installment::where('loan_id', $loan->id)
-                            ->where('status', 'unpaid')
-                            ->update([
-                                'salary_id' => $salary->id,
-                                'date_paid' => now(),
-                                'status' => 'paid',
-                            ]);
-
-                        $loan->update(['status' => 'completed']);
-
-                        Log::info("Loan Fully Paid. All Installments Marked as Paid.", ['loan_id' => $loan->id]);
-                    }
-                }
-            } else {
-                Log::warning("No unpaid installment found for loan.", ['loan_id' => $salary->loan_id]);
-            }
+    {
+        if ($data['deduct_loan'] === 'no') {
+            $data['loan_deduction'] = 0;
         }
 
-        // ✅ Advance Deduction Logic
-        Log::info("Processing Advance Deduction", ['salary_id' => $salary->id]);
+        return $data;
+    }
 
-       // ✅ Advance Deduction Logic
-       Log::info("Processing Advance Deduction", ['salary_id' => $salary->id]);
+    protected static function booted()
+    {
+        static::created(function ($salary) {
 
-       // Get total outstanding advances
-       $totalAdvances = $salary->employee->advances()->where('remaining_balance', '>', 0)->sum('remaining_balance');
-       $deductionAmount = min($salary->net_salary, $totalAdvances); // Deduct only what can be covered
+            Log::info("Processing Loan Deduction", [
+                'salary_id' => $salary->id,
+                'employee_id' => $salary->employee_id,
+                'deduct_loan' => $salary->deduct_loan,
+                'loan_id' => $salary->loan_id,
+                'loan_deduction' => $salary->loan_deduction
+            ]);
 
-       if ($deductionAmount > 0) {
-           // ✅ Update Salary with Advance Deduction
-           $salary->update(['advance_deduction' => $deductionAmount]);
+            // ===================== LOAN DEDUCTION =====================
+            if ($salary->deduct_loan === 'yes' && $salary->loan_id) {
+                $installment = Installment::where('loan_id', $salary->loan_id)
+                    ->where('status', 'unpaid')
+                    ->orderBy('due_date', 'asc')
+                    ->first();
 
-           // ✅ Process Each Advance Until Deduction is Covered
-           foreach ($salary->employee->advances()->where('remaining_balance', '>', 0)->orderBy('created_at')->get() as $advance) {
-               if ($deductionAmount <= 0) {
-                   break;
-               }
+                if ($installment) {
+                    $loan = Loan::find($salary->loan_id);
 
-               $deducted = min($deductionAmount, $advance->remaining_balance);
+                    if ($loan) {
+                        $loan->balance -= $salary->loan_deduction;
+                        $loan->save();
 
-               // ✅ Update Advance Entry
-               $advance->update([
-                   'remaining_balance' => $advance->remaining_balance - $deducted,
-                   'salary_id' => $salary->id, // ✅ Ensure Salary ID is Assigned
-                   'is_deducted' => ($advance->remaining_balance - $deducted) <= 0, // Mark as fully deducted if balance is 0
-               ]);
+                        $installment->update([
+                            'salary_id' => $salary->id,
+                            'date_paid' => now(),
+                            'status' => 'paid',
+                        ]);
 
-               $deductionAmount -= $deducted;
-           }
-       }
+                        if ($loan->balance <= 0) {
+                            Installment::where('loan_id', $loan->id)
+                                ->where('status', 'unpaid')
+                                ->update([
+                                    'salary_id' => $salary->id,
+                                    'date_paid' => now(),
+                                    'status' => 'paid',
+                                ]);
 
-       Log::info("Advance Deduction Completed", [
-           'salary_id' => $salary->id,
-           'remaining_net_salary' => $salary->net_salary
-       ]);
-    });
-}
+                            $loan->update(['status' => 'completed']);
+                        }
+                    }
+                }
+            }
 
+            // ===================== ADVANCE DEDUCTION =====================
+            Log::info("Processing Advance Deduction", ['salary_id' => $salary->id]);
 
+            $totalAdvances = $salary->employee
+                ->advances()
+                ->where('remaining_balance', '>', 0)
+                ->sum('remaining_balance');
 
+            $deductionAmount = min($salary->net_salary, $totalAdvances);
 
+            if ($deductionAmount > 0) {
+                $salary->update(['advance_deduction' => $deductionAmount]);
 
+                foreach (
+                    $salary->employee
+                        ->advances()
+                        ->where('remaining_balance', '>', 0)
+                        ->orderBy('created_at')
+                        ->get() as $advance
+                ) {
+                    if ($deductionAmount <= 0) {
+                        break;
+                    }
 
-public function loan()
-{
-    return $this->belongsTo(Loan::class);
-}
+                    $deducted = min($deductionAmount, $advance->remaining_balance);
 
+                    $advance->update([
+                        'remaining_balance' => $advance->remaining_balance - $deducted,
+                        'salary_id' => $salary->id,
+                        'is_deducted' => ($advance->remaining_balance - $deducted) <= 0,
+                    ]);
 
+                    $deductionAmount -= $deducted;
+                }
+            }
 
+            // ===================== SAVINGS DEDUCTION =====================
+            $savingsDeduction = (float) ($salary->saving_deduction ?? 0);
+
+            if ($savingsDeduction > 0) {
+
+                // 1. Find existing non-withdrawn plan
+                $plan = EmployeeSavingsPlan::where('employee_id', $salary->employee_id)
+                    ->where('status', '!=', 'withdrawn')
+                    ->first();
+
+                if (!$plan) {
+                    $plan = EmployeeSavingsPlan::create([
+                        'employee_id' => $salary->employee_id,
+                        'company_id' => $salary->company_id,
+                        'total_amount' => 0,
+                        'status' => 'active',
+                    ]);
+                }
+
+                // 2. Only process if active
+                if ($plan->status === 'active') {
+
+                    // ✅ ONLY CHANGE IS HERE
+                    Saving::create([
+                        'employee_id' => $salary->employee_id,
+                        'company_id' => $salary->company_id,
+                        'salary_id' => $salary->id,
+                        'employee_savings_plan_id' => $plan->id, // ✅ added safely
+                        'amount' => $savingsDeduction,
+                        'notes' => 'Automatic deduction from payroll.',
+                    ]);
+
+                    $plan->increment('total_amount', $savingsDeduction);
+
+                    $plan->status = 'active';
+                    $plan->save();
+                }
+
+                // 3. Link salary to plan (already existed)
+                $salary->update([
+                    'employee_savings_plan_id' => $plan->id
+                ]);
+            }
+        });
+    }
+
+    public function loan()
+    {
+        return $this->belongsTo(Loan::class);
+    }
 }

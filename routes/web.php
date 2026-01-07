@@ -1,9 +1,10 @@
 <?php
 
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SavingsController;
 use App\Http\Controllers\PayrollPdfController;
 use App\Http\Controllers\LoanSummaryController;
-use App\Http\Controllers\ProfileController;
-use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
     return view('welcome');
@@ -22,5 +23,7 @@ Route::middleware('auth')->group(function () {
 
 Route::get('/payroll/pdf/{id}', [PayrollPdfController::class, 'generatePayslip'])->name('payroll.pdf');
 Route::get('/loan-summary/{loan}', [LoanSummaryController::class, 'generate'])->name('loan.summary');
+Route::get('savings/{planId}/summary', [SavingsController::class, 'generate'])
+    ->name('savings.summary');
 
 require __DIR__.'/auth.php';
